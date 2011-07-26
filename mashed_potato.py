@@ -39,7 +39,10 @@ def get_paths_from_configuration(project_path, configuration_file):
     configuration.
     
     """
-    path_regexps = []
+    current_State = ""
+    
+    config = {'monitor_path_regexps': [], 'write_path_regexps': []}
+
     
     for (line_number, line) in enumerate(configuration_file.split('\n')):
         line = line.strip()
@@ -50,9 +53,21 @@ def get_paths_from_configuration(project_path, configuration_file):
                       "Line %d will not do anything." % (line_number + 1))
                                                       # lines are zero-indexed
             else:
-                path_regexps.append(get_path_regexp(project_path, line))
+                if line.startswith('[WATCH]'):
+                    current_State = '[WATCH]'
+                    continue
+                elif line.startswith('[WRITE]'):
+                    current_State = '[WRITE]'
+                    continue
+                
+                if current_State == '[WATCH]' :
+                    config['monitor_path_regexps'].append(get_path_regexp(project_path, line))
+                elif current_State == '[WRITE]' :
+                    config['write_path_regexps'].append(os.path.join(project_path, line))
+                else:
+                    path_regexps.append(get_path_regexp(project_path, line))
 
-    return path_regexps
+    return config
 
 
 def get_path_regexp(project_path, relative_regexp):
@@ -151,6 +166,24 @@ def is_uglifyjs_installed():
 
     return False
 
+def is_juicer_installed():
+    """Is juicer installed and on PATH?
+
+    If you want it installed:
+    $ gem install juicer
+    $ juicer install yui_compressor
+    $ juicer install closure_compiler
+    $ juicer install jslint
+
+    """
+    for path in os.environ["PATH"].split(os.pathsep):
+        full_path = os.path.join(path, "juicer")
+
+        if os.path.exists(full_path):
+            return True
+
+    return False
+
 def minify(file_path):
     """Create a minified JS or CSS file of the file at file_path.
 
@@ -158,7 +191,11 @@ def minify(file_path):
     better. CSS always uses YUICompressor.
 
     """
-    if file_path.endswith(".js") and is_uglifyjs_installed():
+    if is_juicer_installed():
+        command_line = "juicer merge %s" % \
+            (file_path)
+    
+    elif file_path.endswith(".js") and is_uglifyjs_installed():
         # strip comments at the start:
         command_line = "uglifyjs -nc %s > %s" % \
             (file_path, get_minified_name(file_path))
@@ -223,13 +260,20 @@ def all_monitored_files(path_regexps, project_path):
                 yield file_path
 
 
-def continually_monitor_files(path_regexps, project_path):
+def continually_monitor_files(config, project_path):
     while True:
-        for file_path in all_monitored_files(path_regexps, project_path):
+        for file_path in all_monitored_files(config['monitor_path_regexps'], project_path):
             if is_minifiable(file_path) and needs_minifying(file_path):
                 try:
-                    minify(file_path)
-
+                    if is_juicer_installed():
+                        for write_file in config['write_path_regexps']:
+                            minify(write_file)
+                        
+                        break
+                        
+                    else:
+                        minify(file_path)
+                        
                     # inform the user:
                     now_time = datetime.datetime.now().time()
                     pretty_now_time = str(now_time).split('.')[0]
@@ -255,7 +299,7 @@ if __name__ == '__main__':
 
     if os.path.exists(configuration_path):
         configuration_file = open(configuration_path, 'r').read()
-        path_regexps = get_paths_from_configuration(project_path, configuration_file)
+        config = get_paths_from_configuration(project_path, configuration_file)
 
     else:
         print "There isn't a .mash file at \"%s\"." % os.path.abspath(project_path)
@@ -267,7 +311,7 @@ if __name__ == '__main__':
     print ""
 
     try:
-        continually_monitor_files(path_regexps, project_path)
+        continually_monitor_files(config, project_path)
     except KeyboardInterrupt:
         print "" # for tidyness' sake
 
